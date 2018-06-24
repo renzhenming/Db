@@ -9,8 +9,10 @@ import com.rzm.commonlibrary.general.sqlite.annotation.DbField;
 import com.rzm.commonlibrary.general.sqlite.annotation.DbTable;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -43,17 +45,17 @@ public abstract class Dao<R> implements IDao<R>{
      */
     private String tableName;
 
-    protected synchronized boolean init(Class<R> entity, SQLiteDatabase database){
+    protected synchronized boolean init(Class<R> entityClazz, SQLiteDatabase database){
         if (!hasInit){
-            this.entityClass = entity;
+            this.entityClass = entityClazz;
             this.database = database;
 
             //获取表名
-            if (entity.getAnnotation(DbTable.class) == null){
+            if (entityClazz.getAnnotation(DbTable.class) == null){
                 //没有设置类注解DbTable,以类名的字符串形式作为表名
-                tableName = entity.getClass().getSimpleName();
+                tableName = entityClazz.getSimpleName();
             }else{
-                tableName = entity.getAnnotation(DbTable.class).value();
+                tableName = entityClazz.getAnnotation(DbTable.class).value();
             }
 
             //安全性验证
@@ -61,8 +63,8 @@ public abstract class Dao<R> implements IDao<R>{
                 return false;
             }
 
-            if (!TextUtils.isEmpty(createTable())){
-                database.execSQL(createTable());
+            if (!TextUtils.isEmpty(createTable(tableName))){
+                database.execSQL(createTable(tableName));
             }
 
             initCacheMap();
@@ -75,6 +77,7 @@ public abstract class Dao<R> implements IDao<R>{
      * 维护映射关系
      */
     private void initCacheMap() {
+        cacheMap = new HashMap<>();
         String sql ="select * from "+this.tableName+" limit 1 , 0";
         Cursor cursor = null;
         try {
@@ -113,23 +116,10 @@ public abstract class Dao<R> implements IDao<R>{
         }catch (Exception e){
 
         }finally {
-            cursor.close();
+            if (cursor != null) {
+                cursor.close();
+            }
         }
-    }
-
-    /**
-     * 创建具体的表的操作交给具体的bean
-     * @return
-     */
-    protected abstract String createTable();
-
-    @Override
-    public Long insert(R entity) {
-        if (entity == null) return 0l;
-        Map<String,String> map = getValues(entity);
-        ContentValues values=getContentValues(map);
-        Long result =database.insert(tableName,null,values);
-        return result;
     }
 
     /**
@@ -161,17 +151,13 @@ public abstract class Dao<R> implements IDao<R>{
      */
     private Map<String, String> getValues(R entity) {
         HashMap<String,String> result=new HashMap<>();
-        Iterator<Field> iterator = cacheMap.values().iterator();
-        while(iterator.hasNext()){
-            Field columnField = iterator.next();
-            String cacheKey = null;
-            String cacheValue = null;
-            if (columnField.getAnnotation(DbField.class) != null){
-                cacheKey = columnField.getAnnotation(DbField.class).value();
-            }else{
-                cacheKey = columnField.getName();
-            }
 
+        Set<String> keys = cacheMap.keySet();
+        for (String key : keys) {
+            Field columnField = cacheMap.get(key);
+            String cacheKey = key;
+
+            String cacheValue = null;
             try {
                 if (columnField.get(entity) == null){
                     continue;
@@ -182,11 +168,154 @@ public abstract class Dao<R> implements IDao<R>{
             }
             result.put(cacheKey,cacheValue);
         }
+
+        /*Iterator<Field> iterator = cacheMap.values().iterator();
+        while(iterator.hasNext()){
+            Field columnField = iterator.next();
+            String cacheKey = null;
+
+            if (columnField.getAnnotation(DbField.class) != null){
+                cacheKey = columnField.getAnnotation(DbField.class).value();
+            }else{
+                cacheKey = columnField.getName();
+            }
+            String cacheValue = null;
+            try {
+                if (columnField.get(entity) == null){
+                    continue;
+                }
+                cacheValue = columnField.get(entity).toString();
+            } catch (IllegalAccessException e) {
+                e.printStackTrace();
+            }
+            result.put(cacheKey,cacheValue);
+        }*/
+        return result;
+    }
+
+    /**
+     * 创建具体的表的操作交给具体的bean
+     * @return
+     * @param tableName
+     */
+    protected abstract String createTable(String tableName);
+
+    @Override
+    public Long insert(R entity) {
+        if (entity == null) return 0l;
+        Map<String,String> map = getValues(entity);
+        ContentValues values=getContentValues(map);
+        Long result =database.insert(tableName,null,values);
+        return result;
+    }
+
+    @Override
+    public Long delete(R where) {
+        Map<String,String> deleteValues = getValues(where);
+        Condition condition = new Condition(deleteValues);
+        long result = database.delete(tableName,condition.getWhereClause(),condition.getWhereArgs());
         return result;
     }
 
     @Override
     public Long update(R entity, R where) {
-        return null;
+        long result = -1;
+        Map<String,String> updateClause = getValues(entity);
+
+        Map<String,String> whereClause = getValues(where);
+        Condition condition = new Condition(whereClause);
+        ContentValues values = getContentValues(updateClause);
+        result = database.update(tableName,values,condition.getWhereClause(),condition.getWhereArgs());
+        //result = database.updateWithOnConflict()
+        return result;
+    }
+
+    @Override
+    public List<R> query(R where) {
+        return query(where,null,null,null);
+    }
+
+    @Override
+    public List<R> query(R where, String orderBy, Integer startIndex, Integer limit) {
+        Map map=getValues(where);
+
+        String limitString=null;
+        if(startIndex!=null&&limit!=null)
+        {
+            limitString=startIndex+" , "+limit;
+        }
+
+        Condition condition=new Condition(map);
+        Cursor cursor=database.query(tableName,null,condition.getWhereClause()
+                ,condition.getWhereArgs(),null,null,orderBy,limitString);
+        List<R> result=getResult(cursor,where);
+        cursor.close();
+        return result;
+    }
+
+    private List<R> getResult(Cursor cursor, R where) {
+        ArrayList list=new ArrayList();
+
+        Object item;
+        while (cursor.moveToNext())
+        {
+            try {
+                item=where.getClass().newInstance();
+                /**
+                 * 列名  name
+                 * 成员变量名  Filed;
+                 */
+                Iterator iterator=cacheMap.entrySet().iterator();
+                while (iterator.hasNext())
+                {
+                    Map.Entry entry= (Map.Entry) iterator.next();
+                    /**
+                     * 得到列名
+                     */
+                    String colomunName= (String) entry.getKey();
+                    /**
+                     * 然后以列名拿到  列名在游标的位子
+                     */
+                    Integer colmunIndex=cursor.getColumnIndex(colomunName);
+
+                    Field field= (Field) entry.getValue();
+
+                    Class type=field.getType();
+                    if(colmunIndex!=-1)
+                    {
+                        if(type==String.class)
+                        {
+                            //反射方式赋值
+                            field.set(item,cursor.getString(colmunIndex));
+                        }else if(type==Double.class)
+                        {
+                            field.set(item,cursor.getDouble(colmunIndex));
+                        }else  if(type==Integer.class)
+                        {
+                            field.set(item,cursor.getInt(colmunIndex));
+                        }else if(type==Long.class)
+                        {
+                            field.set(item,cursor.getLong(colmunIndex));
+                        }else  if(type==byte[].class)
+                        {
+                            field.set(item,cursor.getBlob(colmunIndex));
+                            /*
+                            不支持的类型
+                             */
+                        }else {
+                            continue;
+                        }
+                    }
+
+                }
+                list.add(item);
+            } catch (InstantiationException e) {
+                e.printStackTrace();
+            } catch (IllegalAccessException e) {
+                e.printStackTrace();
+            }
+
+        }
+        return list;
     }
 }

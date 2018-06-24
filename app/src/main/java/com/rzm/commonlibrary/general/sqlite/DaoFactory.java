@@ -19,6 +19,7 @@ public class DaoFactory {
         openDatabase();
     }
 
+    //内部类实现单例
     private static class Holder{
         private static DaoFactory instance = new DaoFactory();
     }
@@ -33,20 +34,20 @@ public class DaoFactory {
 
     /**
      *
-     * @param clazz  bean对象对应的dao
-     * @param entity bean对象class
+     * @param daoClazz  bean对象对应的dao
+     * @param entityClazz bean对象class
      * @param <Z>
      * @param <R>
      * @return
      */
-    public synchronized <Z extends Dao<R>,R> Z getDataHelper(Class<Z> clazz, Class<R> entity){
-        if (clazz == null || entity == null){
+    public synchronized <Z extends Dao<R>,R> Z getDataHelper(Class<Z> daoClazz, Class<R> entityClazz){
+        if (daoClazz == null || entityClazz == null){
             throw new NullPointerException("is null");
         }
         Dao dao = null;
         try {
-            dao = clazz.newInstance();
-            dao.init(entity,sqLiteDatabase);
+            dao = daoClazz.newInstance();
+            dao.init(entityClazz,sqLiteDatabase);
         } catch (InstantiationException e) {
             e.printStackTrace();
         } catch (IllegalAccessException e) {
